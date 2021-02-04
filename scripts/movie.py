@@ -28,9 +28,9 @@ from pyHARM.ana.variables import T_mixed, pretty
 from pyHARM.util import i_of, calc_nthreads, run_parallel
 
 # Movie size in inches. Keep 16/9 for standard-size movies
-FIGX = 16
-FIGY = 9
-FIGDPI = 100
+FIGX = 1
+FIGY = 1
+FIGDPI = 8192
 
 # Load diagnostic data from post-processing (eht_out.p)
 diag_post = False
@@ -81,11 +81,11 @@ def plot(n):
     dump = pyHARM.load_dump(files[n], **to_load)
 
     # Title by time, otherwise number
-    try:
-        fig.suptitle("t = {}".format(dump['t']))
-    except ValueError:
-        fig.suptitle("dump {}".format(n))
-
+    #try:
+    #    fig.suptitle("t = {}".format(dump['t']))
+    #except ValueError:
+    #    fig.suptitle("dump {}".format(n))
+    
     # Zoom in for small problems
     # TODO use same r1d as analysis?
     if len(dump['r'].shape) < 3:
@@ -521,6 +521,6 @@ if __name__ == "__main__":
             nthreads = psutil.cpu_count()
             print("Using {} threads".format(nthreads))
         else:
-            nthreads = calc_nthreads(io.read_hdr(files[0]), pad=0.6)
+            nthreads = 3
 
         run_parallel(plot, len(files), nthreads)

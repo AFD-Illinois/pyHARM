@@ -148,13 +148,6 @@ def read_jcon(fname, add_ghosts=False):
     else:
         ng_iz = ng_ix
 
-    params['startx1'] = G.startx[1]
-    params['startx2'] = G.startx[2]
-    params['startx3'] = G.startx[3]
-    params['dx1'] = dx = G.dx[1]
-    params['dx2'] = dy = G.dx[2]
-    params['dx3'] = dz = G.dx[3]
-
     # Lay out the blocks and determine total mesh size
     bounds = []
     for ib in range(f.NumBlocks):
@@ -186,3 +179,5 @@ def read_jcon(fname, add_ghosts=False):
             f.Get('c.c.bulk.jcon', False)[ib,o[4]:o[5],o[2]:o[3],o[0]:o[1],:].transpose(3,2,1,0)
 
     return jcon
+
+# TODO abstract the mesh thing, add c.c.bulk.pflag, c.c.bulk.fflag.  ctop?

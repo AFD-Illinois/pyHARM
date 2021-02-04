@@ -172,7 +172,7 @@ class Grid:
                 self.gdet[loc.value] = gdet_loc
                 self.lapse[loc.value] = 1./np.sqrt(-gcon_loc[0, 0])
 
-            self.conn = self.coords.conn_func(x_cent)
+            #self.conn = self.coords.conn_func(x_cent)
 
     def coord(self, i, j, k, loc=Loci.CENT):
         """Get the position x of zone(s) i,j,k, in _native_ coordinates
