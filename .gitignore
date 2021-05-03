@@ -3,10 +3,14 @@ restarts/
 dumps/
 *.h5
 *.png
+*.mp4
 
 # Libraries which are managed separately
 src/pystella/
 src/loo.py/
+
+# Editor files
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,9 +1,10 @@
 # Data reductions (integrals, averages, statistics) for fluid simulation output data
 
 import numpy as np
-# TODO pystella version?
 import scipy.fftpack as fft
 
+# This is too darn useful
+from pyHARM.util import i_of
 
 # General interface for reductions:
 # (dump, var, options)
@@ -23,27 +24,33 @@ def corr_midplane(var, norm=True, at_i1=None):
      """
     if at_i1 is None:
         at_i1 = range(var.shape[0])
+    if isinstance(at_i1,int):
+        at_i1 = [at_i1]
 
+    # This selects the midplane-adjacent zones N2/2-1 & N2/2
     jmin = var.shape[1] // 2 - 1
     jmax = var.shape[1] // 2 + 1
 
     R = np.zeros((len(at_i1), var.shape[2]))
 
     # TODO is there a way to vectorize over R? Also, are we going to average over adjacent r ever?
-    for i1 in at_i1:
+    for i_out,i1 in enumerate(at_i1):
         # Average over small angle around midplane
         var_phi = np.mean(var[i1, jmin:jmax, :], axis=0)
         # Calculate autocorrelation
         var_phi_normal = (var_phi - np.mean(var_phi)) / np.std(var_phi)
         var_corr = fft.ifft(np.abs(fft.fft(var_phi_normal)) ** 2)
-        R[i1] = np.real(var_corr) / var_corr.size
+        R[i_out] = np.real(var_corr) / var_corr.size
 
     if norm:
         normR = R[:, 0]
         for k in range(var.shape[2]):
             R[:, k] /= normR
 
-    return R
+    if R.shape[0] == 1:
+        return R[0,:]
+    else:
+        return R
 
 
 def corr_midplane_direct(var, norm=True):
@@ -178,86 +185,98 @@ def get_eht_disk_j_vals(dump, th_min=np.pi / 3., th_max=2*np.pi / 3.):
     elif len(dump['th'].shape) == 2:
         ths = dump['th'][-1, :]
 
-    jmin, jmax = -1, -1
-    for n in range(len(ths)):
-        if ths[n] > th_min:
-            jmin = n
-            break
-
-    for n in range(len(ths)):
-        if ths[n] > th_max:
-            jmax = n
-            break
-
-    return jmin, jmax
+    return (i_of(ths, th_min), i_of(ths, th_max))
 
 
-def shell_sum(dump, var, at_zone=None, mask=None):
-    """Sum a variable over a spherical shell at a particular X1 zone, or at each zone as a radial profile"""
+def shell_sum(dump, var, at_r=None, at_zone=None, th_slice=None, j_slice=None, mask=None):
+    """Sum a variable over spherical shells. Returns a radial profile (array length N1) or single-shell sum
+    @param at_r: Single radius at which to sum (nearest-neighbor smaller zone is used)
+    @param at_zone: Specific radial zone at which to sum, for compatibility
+    @param th_slice: Tuple of minimum and maximum theta value to sum
+    @param j_slice: Tuple of x2 indices instead of specifying theta
+    @param mask: array of 1/0 of remaining size which is multiplied with the result
+    """
     if isinstance(var, str):
         var = dump[var]
 
-    # TODO could maybe be made faster with 'where' but also harder to get right
-    integrand = var * dump['gdet'][:, :, None] * dump.header['dx2'] * dump.header['dx3']
+    # Translate coordinates to zone numbers.
+    # TODO Xtoijk for slices?
+    # TODO slice dx2, dx3 if they're matrices for exotic coordinates
+    if th_slice is not None:
+        j_slice = get_eht_disk_j_vals(dump, th_slice[0], th_slice[1])
+    if j_slice is not None:
+        var = var[:,j_slice[0]:j_slice[1],:]
+        gdet = dump['gdet'][:,j_slice[0]:j_slice[1]]
+    else:
+        gdet = dump['gdet']
+
+    if at_r is not None:
+        at_zone = i_of(dump['r'][:,0,0], at_r)
+    if at_zone is not None:
+        # Keep integrand "3D" and deal with it below
+        var = var[at_zone:at_zone+1]
+        gdet = gdet[at_zone:at_zone+1]
+
+    integrand = var * gdet[:, :, None] * dump.header['dx2'] * dump.header['dx3']
     if mask is not None:
         integrand *= mask
 
-    if at_zone is not None:
-        return np.sum(integrand[at_zone, :, :], axis=(0, 1))
+    ret = np.sum(integrand, axis=(-2, -1))
+    if ret.shape == (1,):
+        # Don't return a scalar result as a length-1 array
+        return ret[0]
     else:
-        return np.sum(integrand, axis=(1, 2))
+        return ret
 
 
-def partial_shell_sum(dump, var, jmin, jmax):
-    """Version of above sum limited to area between jmin/jmax, usually used for isolating disk/jet"""
+def shell_avg(dump, var, **kwargs):
+    """Average a variable over spherical shells. Returns a radial profile (array length N1) or single-shell average.
+    See shell_sum for arguments.
+    """
+    if isinstance(var, str):
+        var = dump[var]
+    return shell_sum(dump, var, **kwargs) / shell_sum(dump, np.ones_like(var), **kwargs)
+
+
+def sphere_sum(dump, var, r_slice=None, i_slice=None, th_slice=None, j_slice=None, mask=None):
+    """Sum everything within a sphere, semi-sphere, or thick spherical shell
+    Extent can be specified in r and/or theta, or i and/or j
+    Mask is multiplied at the end
+    """
+    # TODO see sum for problems with this
+    if th_slice is not None:
+        j_slice = get_eht_disk_j_vals(dump, th_slice[0], th_slice[1])
+    if j_slice is not None:
+        var = var[:,j_slice[0]:j_slice[1],:]
+        gdet = dump['gdet'][:,j_slice[0]:j_slice[1]]
+    else:
+        gdet = dump['gdet']
+
+    if r_slice is not None:
+        i_slice = (i_of(dump['r'][:,0,0], r_slice[0]), i_of(dump['r'][:,0,0], r_slice[1]))
+    if i_slice is not None:
+        var = var[i_slice[0]:i_slice[1]]
+        gdet = gdet[i_slice[0]:i_slice[1]]
+
+    return np.sum(var * gdet[:, :, None] * dump.header['dx1'] * dump.header['dx2'] * dump.header['dx3'])
+
+
+def sphere_av(dump, var, **kwargs):
+    if isinstance(var, str):
+        var = dump[var]
+    return sphere_sum(dump, var, **kwargs) / sphere_sum(dump, ones_like(var), **kwargs)
+
+
+def midplane_sum(dump, var, zones=2, **kwargs):
+    """Average a few zones adjacent to midplane and sum.
+    Allows specifying an r_slice or i_slice within which to sum
+    """
     if isinstance(var, str):
         var = dump[var]
 
-    return (var[:, jmin:jmax, :] *
-            dump['gdet'][:, jmin:jmax, None] * dump.header['dx2'] * dump.header['dx3']).sum(axis=(1, 2)) / \
-           ((dump['gdet'][:, jmin:jmax] * dump.header['dx2']).sum(axis=1) * 2 * np.pi)
-
-
-def midplane_sum(dump, var, within=None):
-    """Average the two zones adjacent to midplane and sum, optionally within some zone in X1"""
-    if isinstance(var, str):
-        var = dump[var]
-
-    jmin = var.shape[1] // 2 - 1
-    jmax = var.shape[1] // 2 + 1
-    if within is not None:
-        return np.sum(var[:within, jmin:jmax, :] *
-                      dump['gdet'][:within, jmin:jmax, None] * dump.header['dx1'] * dump.header['dx3']) / \
-               (jmax - jmin)
-    else:
-        return np.sum(var[:, jmin:jmax, :] *
-                      dump['gdet'][:, jmin:jmax, None] * dump.header['dx1'] * dump.header['dx3']) / \
-               (jmax - jmin)
-
-
-def full_vol_sum(dump, var, within=None):
-    """Sum variable over all space, or within the indicated zone in X1"""
-    if isinstance(var, str):
-        var = dump[var]
-
-    if within is not None:
-        return np.sum(var[:within, :, :] *
-                      dump['gdet'][:within, :, None] * dump.header['dx1'] * dump.header['dx2'] * dump.header['dx3'])
-    else:
-        return np.sum(var * dump['gdet'][:, :, None] * dump.header['dx1'] * dump.header['dx2'] * dump.header['dx3'])
-
-
-def partial_vol_sum(dump, var, jmin, jmax, outside=None):
-    if isinstance(var, str):
-        var = dump[var]
-
-    # TODO can I cache the volume instead of passing jmin, jmax?
-    if outside is not None:
-        return np.sum(var[outside:, jmin:jmax, :] * dump['gdet'][outside:, jmin:jmax, None] *
-                      dump.header['dx1'] * dump.header['dx2'] * dump.header['dx3'])
-    else:
-        return np.sum(var[:, jmin:jmax, :] * dump['gdet'][:, jmin:jmax, None] *
-                      dump.header['dx1'] * dump.header['dx2'] * dump.header['dx3'])
+    jmin = var.shape[1] // 2 - zones//2
+    jmax = var.shape[1] // 2 + zones//2
+    return sphere_sum(dump, var, j_slice=(jmin, jmax), **kwargs) / (jmax - jmin)
 
 
 def theta_av(dump, var, start, zones_to_av=1, use_gdet=False, fold=True):

@@ -3,8 +3,9 @@
 # Script to write an arbitrary gridfile
 
 import sys
+import h5py
 import pyHARM.grid as grid
-import pyHARM.h5io as h5io
+import pyHARM.io.gridfile as h5io
 
 system=sys.argv[1]
 spin=float(sys.argv[2])
@@ -22,4 +23,4 @@ print("Building grid: {}, a = {}, {}x{}x{} to r_out of {}".format(
       system, spin, n1, n2, n3, r_out))
 
 G = grid.make_some_grid(system, n1, n2, n3, a=spin, r_out=r_out)
-h5io.dump_grid(G, fname=sys.argv[-1])
+h5io.write_grid(G, fname=sys.argv[-1])

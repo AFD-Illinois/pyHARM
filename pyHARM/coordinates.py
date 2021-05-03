@@ -2,17 +2,19 @@
 import numpy as np
 # Need extra broadcasting currently, or this would be scipy.linalg
 import numpy.linalg as la
+import scipy.optimize as opt
 
 default_met_params = {'a': 0.9375, 'hslope': 0.3, 'r_out': 50.0, 'n1tot': 192,
                       'poly_xt': 0.82, 'poly_alpha': 14.0, 'mks_smooth': 0.5}
 
 class CoordinateSystem(object):
-    """ Base class for all classes representing coordinate systems
+    """ Base class for representing coordinate systems
     Coordinate classes define, as functions of their native coordinates X:
      * r,th,phi in spherical Kerr-Schild coordinates (or just spherical coordinates in the case of Minkowski)
      * A transformation matrix, dxdX, for tensors from one system to the other
      * The forms and determinant of the metric, gcov, gcon, & gdet
-     Assuming the coordinates are a re-indexing of KS
+
+     Of these, most are derivable
     """
 
     def native_startx(cls, met_params):
@@ -71,7 +73,7 @@ class CoordinateSystem(object):
                     theta = np.pi - self.small_th
         return theta
 
-    def gcov(self, X):
+    def gcov_ks(self, X):
         gcov_ks = np.zeros([4, 4, *(X.shape[1:])])
         r, th, _ = self.ks_coord(X)
 
@@ -96,7 +98,11 @@ class CoordinateSystem(object):
         gcov_ks[3, 1] = gcov_ks[1, 3]
         gcov_ks[3, 3] = s2 * (rho2 + self.a ** 2 * s2 * (1. + 2. * r / rho2))
 
+        return gcov_ks
+
+    def gcov(self, X):
         # Apply coordinate transformation to code coordinates X
+        gcov_ks = self.gcov_ks(X)
         dxdX = self.dxdX(X)
         return np.einsum("ab...,ac...,bd...->cd...", gcov_ks, dxdX, dxdX)
 
@@ -110,10 +116,17 @@ class CoordinateSystem(object):
         # TODO add option to return gdet for speed
         if len(gcov.shape) == 2:
             return la.inv(gcov)
+        elif len(gcov.shape) == 3:
+            # Canon ordering is mu,nu,i,j for what I swear are good reasons
+            gcov_t = gcov.transpose((2, 0, 1))
+            return la.inv(gcov_t).transpose((2, 0, 1))
         elif len(gcov.shape) == 4:
             # Canon ordering is mu,nu,i,j for what I swear are good reasons
             gcov_t = gcov.transpose((2, 3, 0, 1))
             return la.inv(gcov_t).transpose((2, 3, 0, 1))
+        elif len(gcov.shape) == 5:
+            gcov_t = gcov.transpose((2, 3, 4, 0, 1))
+            return la.inv(gcov_t).transpose((3, 4, 0, 1, 2))
         else:
             raise ValueError("Dimensions of gcov are {}.  Should be 4x4 or 4x4xN1xN2".format(gcov.shape))
 
@@ -122,8 +135,16 @@ class CoordinateSystem(object):
         # TODO could share more code w/above. Worth it?
         if len(gcov.shape) == 2:
             return np.sqrt(-la.det(gcov))
+        elif len(gcov.shape) == 3:
+            gcov_t = gcov.transpose((2, 0, 1))
+            gdet = np.sqrt(-la.det(gcov_t))
+            return gdet
         elif len(gcov.shape) == 4:
             gcov_t = gcov.transpose((2, 3, 0, 1))
+            gdet = np.sqrt(-la.det(gcov_t))
+            return gdet
+        elif len(gcov.shape) == 5:
+            gcov_t = gcov.transpose((2, 3, 4, 0, 1))
             gdet = np.sqrt(-la.det(gcov_t))
             return gdet
         else:
@@ -245,8 +266,56 @@ class Minkowski(CoordinateSystem):
     def conn_func(cls, x, delta=1e-5):
         return np.zeros([4, 4, 4, *(x.shape[1:])])
 
+class KS(CoordinateSystem):
+    def __init__(self, met_params={'a': 0.9375}):
+        self.a = met_params['a']
 
-class MKS(CoordinateSystem):
+    def r(self, x):
+        return x[1]
+
+    def th(self, x):
+        return x[2]
+
+    def phi(self, x):
+        return x[3]
+
+    def bl_coord(self, x):
+        return self.r(x), self.th(x), self.phi(x)
+
+    def cart_x(self, x):
+        return self.r(x)*np.sin(self.th(x))*np.cos(self.phi(x))
+
+    def cart_y(self, x):
+        return self.r(x)*np.sin(self.th(x))*np.sin(self.phi(x))
+
+    def cart_z(self, x):
+        return self.r(x)*np.cos(self.th(x))
+
+    def dxdX(self, x):
+        """Null Transformation"""
+        dxdX = np.zeros([4, 4, *x.shape[1:]])
+        dxdX[0, 0] = 1
+        dxdX[1, 1] = 1
+        dxdX[2, 2] = 1
+        dxdX[3, 3] = 1
+        return dxdX
+
+    def dxdX_cartesian(self, x):
+        dxdX = np.zeros([4, 4, *x.shape[1:]])
+        r, th, phi = self.bl_coord(x)
+        dxdX[0, 0] = 1
+        dxdX[1, 1] = np.sin(th)*np.cos(phi)
+        dxdX[1, 2] = r*np.cos(th)*np.cos(phi)
+        dxdX[1, 3] = -r*np.sin(th)*np.sin(phi)
+        dxdX[2, 1] = np.sin(th)*np.sin(phi)
+        dxdX[2, 2] = r*np.cos(th)*np.sin(phi)
+        dxdX[2, 3] = r*np.sin(th)*np.cos(phi)
+        dxdX[3, 1] = np.cos(th)
+        dxdX[3, 2] = -r*np.sin(th)
+        dxdX[3, 3] = 0
+        return dxdX
+
+class MKS(KS):
     def __init__(self, met_params=default_met_params):
         self.a = met_params['a']
         self.hslope = met_params['hslope']
@@ -265,21 +334,38 @@ class MKS(CoordinateSystem):
         self.r_isco = 3. + z2 - (np.sqrt((3. - z1) * (3. + z1 + 2. * z2))) * np.sign(self.a)
 
     def native_startx(self, met_params):
-        if 'r_in' in met_params:
+        # TODO take direct 'startx' from met params?
+        if 'startx1' in met_params and 'startx2' in met_params and 'startx3' in met_params:
+            return np.array([0, met_params['startx1'], met_params['startx2'], met_params['startx3']])
+        elif 'r_in' in met_params:
             # Set startx1 from r_in
             return np.array([0, np.log(met_params['r_in']), 0, 0])
         elif 'n1tot' in met_params and 'r_out' in met_params:
-            # Else via a guess
-            return np.array([0,
-                             ((met_params['n1tot'] * np.log(self.r_eh) / 5.5 - np.log(met_params['r_out'])) /
-                              (1. + met_params['n1tot'] / 5.5)),
-                             0, 0])
+            # Else via a guess, which we propagate back to the originating parameter file
+            met_params['r_in'] = np.exp((met_params['n1tot'] * np.log(self.r_eh) / 5.5 - np.log(met_params['r_out'])) /
+                                    (-1. + met_params['n1tot'] / 5.5))
+            return np.array([0, np.log(met_params['r_in']), 0, 0])
+        elif 'n1' in met_params and 'r_out' in met_params:
+            # Or a more questionable guess
+            met_params['r_in'] = np.exp((met_params['n1'] * np.log(self.r_eh) / 5.5 - np.log(met_params['r_out'])) /
+                                    (-1. + met_params['n1'] / 5.5))
+            return np.array([0, np.log(met_params['r_in']), 0, 0])
         else:
-            # Else a resonable default. TODO more reasonable?
-            return 1.0
+            print("The only parameters provided to native_startx were: ", met_params)
+            raise ValueError("Cannot find or guess startx!")
 
     def native_stopx(self, met_params):
-        return np.array([0, np.log(met_params['r_out']), 1, 2*np.pi])
+        if 'r_out' in met_params:
+            return np.array([0, np.log(met_params['r_out']), 1, 2*np.pi])
+        elif ('startx1' in met_params and 'dx1' in met_params and 'n1' in met_params and
+               'startx2' in met_params and 'dx2' in met_params and 'n2' in met_params and
+               'startx3' in met_params and 'dx3' in met_params and 'n3' in met_params):
+            return np.array([0, met_params['startx1'] + met_params['n1']*met_params['dx1'],
+                            met_params['startx2'] + met_params['n2']*met_params['dx2'],
+                            met_params['startx3'] + met_params['n3']*met_params['dx3']])
+        else:
+            raise ValueError("Cannot find or guess stopx!")
+
 
     def r(self, x):
         return np.exp(x[1])
@@ -308,13 +394,13 @@ class MKS(CoordinateSystem):
         return dxdX
 
 
-class MMKS(MKS):
+class CMKS(MKS):
     def __init__(self, met_params=default_met_params):
         self.poly_xt = met_params['poly_xt']
         self.poly_alpha = met_params['poly_alpha']
         self.poly_norm = 0.5 * np.pi * 1. / (1. + 1. / (self.poly_alpha + 1.) *
                                              1. / np.power(self.poly_xt, self.poly_alpha))
-        super(MMKS, self).__init__(met_params)
+        super(CMKS, self).__init__(met_params)
 
     def th(self, x):
         y = 2 * x[2] - 1.
@@ -326,6 +412,7 @@ class MMKS(MKS):
 
 
 class FMKS(MKS):
+    """Funky """
     def __init__(self, met_params=default_met_params):
         super(FMKS, self).__init__(met_params)
         self.poly_xt = met_params['poly_xt']
@@ -362,6 +449,15 @@ class FMKS(MKS):
                                                     (1. - self.hslope) * np.pi * np.cos(2. * np.pi * x[2]))
         dxdX[3, 3] = 1
         return dxdX
+
+    def of_ks(self, r, th, phi):
+        x1 = np.log(r)
+        x3 = phi
+        x2 = opt.newton(lambda x2: self.th([0, x1, x2, x3]) - th, 0.5)
+        return [0, x1, x2, x3]
+
+    def of_bl(self, r, th, phi):
+        pass
 
 
 class BHAC_MKS(CoordinateSystem):
@@ -467,8 +563,9 @@ class BL(CoordinateSystem):
         return gcov
 
     def dxdX(self, x):
+        """Transformation matrix for vectors from BL to KS"""
         dxdX = np.zeros([4, 4, *x.shape[1:]])
-        r, th, _ = self.bl_coord(x)
+        r, _, _ = self.bl_coord(x)
 
         dxdX[0, 0] = 1
         dxdX[0, 1] = 2. * r / (r**2 - 2.*r + self.a**2)

@@ -2,11 +2,15 @@
 
 import os
 import numpy as np
+import h5py
 
-from pyHARM.h5io import hdf5_to_dict, read_hdr
 from pyHARM.grid import Grid
-from pyHARM.ana.util import i_of
+from pyHARM.util import i_of
 from pyHARM.ana.variables import fns_dict
+import pyHARM.parameters as parameters
+
+# Specifically for reading the header as copied/output to result files
+import pyHARM.io as io
 
 """
 Tools for dealing with the results computed by scripts/analysis.py.  Results are organized by remaining independent
@@ -21,86 +25,108 @@ where th is mildly r-dependent.
 We ignore this for informal plots, but for figures it can be specified with 'at_r'
 """
 
-def get_header_var(infile, var):
+window_sz = 21
+
+def smoothed(list):
+    new_list = list.copy()
+    for i in range(len(list)):
+        new_list[i] = np.mean(list[max(i-window_sz//2, 0):min(i+window_sz//2+1, len(list))])
+    return new_list
+
+diag_fns = {'mdot': lambda diag: diag['t/Mdot'][()],
+            'phi_b_per': lambda diag: diag['t/Phi_b'][()] / np.sqrt(diag['t/Mdot'][()]),
+            'phi_b': lambda diag: diag['t/Phi_b'][()] / np.sqrt(smoothed(diag['t/Mdot'][()])),
+            'edot_per': lambda diag: diag['t/Edot'][()] / diag['t/Mdot'][()],
+            'edot': lambda diag: diag['t/Edot'][()] / smoothed(diag['t/Mdot'][()]),
+            'ldot_per': lambda diag: diag['t/Ldot'][()] / diag['t/Mdot'][()],
+            'ldot': lambda diag: diag['t/Ldot'][()] / smoothed(diag['t/Mdot'][()])
+            }
+
+def get_header_var(infname, var):
     if ',' in var:
         out = []
         for v in var.split(','):
-            out.append(infile["header"][v][()])
+            out.append(io.read_hdr(infname)[v][()])
         return out
     elif isinstance(var, list):
         out = []
         for v in var:
-            out.append(infile["header"][v][()])
+            out.append(io.read_hdr(infname)[v][()])
         return out
     else:
-        return infile["header"][var][()]
+        return io.read_hdr(infname)[var][()]
 
 
-def get_quiescence(infile, diag=False, set_time=None):
-    if set_time is not None:
-        tstart, tend = set_time
-    else:
-        tstart, tend = infile['avg']['start'][()], infile['avg']['end'][()]
+def get_quiescence(infname, diag=False, set_time=None):
+    with h5py.File(infname, 'r') as infile:
+        if set_time is not None:
+            tstart, tend = set_time
+        else:
+            tstart, tend = infile['avg']['start'][()], infile['avg']['end'][()]
 
-    if diag:
-        t = infile['diag']['t'][()]
-    else:
-        t = infile['coord']['t'][()]
+        if diag:
+            t = infile['diag']['t'][()]
+        else:
+            t = infile['coord']['t'][()]
 
-    start = i_of(t, tstart)
-    end = i_of(t, tend)
+        start = i_of(t, tstart)
+        end = i_of(t, tend)
 
-    return slice(start, end)
+        return slice(start, end)
 
 
-def get_result(infile, ivar, var, qui=False, only_nonzero=True, **kwargs):
+def get_result(infname, ivar, var, qui=False, only_nonzero=True, **kwargs):
     """Get the values of a variable, and of the independent variable against which to plot it.
     Various common slicing options:
     :arg qui Get only "quiescence" time, i.e. range over which time-averages were taken
     :arg only_nonzero Get only nonzero values
     """
-    ret_i = get_ivar(infile, ivar, **kwargs)
-    if var in infile[ivar]:
-        ret_v = infile[ivar][var][()]
-    elif var in fns_dict:
-        ret_v = fns_dict[var](infile[ivar])
-    elif var[:4] == 'log_':
-        ret_i, ret_v = get_result(infile, ivar, var[4:], qui=qui, only_nonzero=only_nonzero, **kwargs)
-        return ret_i, np.log10(ret_v)
-    else:
-        print("Can't find variable: {} as fn of {}".format(var, ivar))
-        return None, None
+    ret_i = np.array(get_ivar(infname, ivar, **kwargs))
+    qui_slc = get_quiescence(infname)
 
-    if qui:
-        qui_slc = get_quiescence(infile)
-        if isinstance(ret_i, list):
-            ret_i = [i[qui_slc] for i in ret_i]
+    with h5py.File(infname, 'r') as infile:
+        if var in infile[ivar]:
+            ret_v = infile[ivar][var][()]
+        elif var in fns_dict:
+            ret_v = fns_dict[var](infile[ivar])
+        elif var[:4] == 'log_':
+            ret_i, ret_v = get_result(infname, ivar, var[4:], qui=qui, only_nonzero=only_nonzero, **kwargs)
+            return ret_i, np.log10(ret_v)
+        elif var in diag_fns:
+                return ret_i, diag_fns[var](infile)
         else:
-            ret_i = ret_i[qui_slc]
-        ret_v = ret_v[qui_slc]
+            print("Can't find variable: {} as a function of {}".format(var, ivar))
+            return None, None
 
-    if only_nonzero and len(ret_v.shape) == 1:
-        nz_slc = np.nonzero(ret_v)
-        if isinstance(ret_i, list):
-            ret_i = [i[nz_slc] for i in ret_i]
-        else:
-            ret_i = ret_i[nz_slc]
-        ret_v = ret_v[nz_slc]
+        if qui:
+            if isinstance(ret_i, list):
+                ret_i = np.array([i[qui_slc] for i in ret_i])
+            else:
+                ret_i = ret_i[qui_slc]
+            ret_v = ret_v[qui_slc]
 
-    return ret_i, ret_v
+        if only_nonzero and len(ret_v.shape) == 1:
+            nz_slc = np.nonzero(ret_v)
+            if isinstance(ret_i, list):
+                ret_i = np.array([i[nz_slc] for i in ret_i])
+            else:
+                ret_i = ret_i[nz_slc]
+            ret_v = ret_v[nz_slc]
+
+        return ret_i, ret_v
 
 
-def get_grid(infile):
-    params = read_hdr(infile['header'])
+def get_grid(infname):
+    params = io.read_hdr(infname)
     return Grid(params)
 
 
-def get_ivar(infile, ivar, th_r=None, i_xy=False, mesh=True):
+def get_ivar(infname, ivar, th_r=None, i_xy=False, mesh=True):
     """Given an input file and the string of independent variable name(s) ('r', 'rth', 'rt', etc),
     return a grid of those variables' values.
     """
     ret_i = []
-    G = get_grid(infile)
+    G = get_grid(infname)
 
     if mesh:
         native_coords = G.coord_all_mesh()
@@ -108,7 +134,8 @@ def get_ivar(infile, ivar, th_r=None, i_xy=False, mesh=True):
         native_coords = G.coord_all()
 
     if ivar[-1:] == 't':
-        t = infile['coord']['t'][()]
+        with h5py.File(infname, 'r') as infile:
+            t = infile['coord']['t'][()]
         if mesh:
             t = np.append(t, t[-1] + (t[-1] - t[0]) / t.shape[0])
         ret_i.append(t)
@@ -155,12 +182,12 @@ def get_ivar(infile, ivar, th_r=None, i_xy=False, mesh=True):
     return ret_grids
 
 
-def get_lc(infile, angle=163, rhigh=20, add_pol=False, qui=False):
-    avg_t = get_ivar(infile, 't')
+def get_lc(infname, angle=163, rhigh=20, add_pol=False, qui=False):
+    avg_t = get_ivar(infname, 't')
     # TODO merge lightcurves into analysis results or keep them in the same directory
-    fpaths = [os.path.join(os.path.dirname(os.path.realpath(infile.filename)),
+    fpaths = [os.path.join(os.path.dirname(os.path.realpath(infname)),
                            "{}".format(int(angle)), "m_1_1_{}".format(rhigh), "lightcurve.dat"),
-              os.path.join(os.path.dirname(os.path.realpath(infile.filename)),
+              os.path.join(os.path.dirname(os.path.realpath(infname)),
                            "{}".format(180-int(angle)), "m_1_1_{}".format(rhigh), "lightcurve.dat")]
 
     t_len = avg_t.size
@@ -185,7 +212,7 @@ def get_lc(infile, angle=163, rhigh=20, add_pol=False, qui=False):
     #print("Polarized transport L1 difference: {}".format(np.linalg.norm(lightcurve - lightcurve_pol)))
 
     if qui:
-        qui_slc = get_quiescence(infile)
+        qui_slc = get_quiescence(infname)
         avg_t = avg_t[qui_slc]
         lightcurve = lightcurve[qui_slc]
         lightcurve_pol = lightcurve_pol[qui_slc]
@@ -196,21 +223,22 @@ def get_lc(infile, angle=163, rhigh=20, add_pol=False, qui=False):
         return avg_t, lightcurve
 
 
-def get_diag(infile, var, only_nonzero=True, qui=False, **kwargs):
-    if 'diag' in infile and 't' in infile['diag'] and var in infile['diag']:
-        ret_i, ret_v = infile['diag']['t'][()], infile['diag'][var][()]
+def get_diag(infname, var, only_nonzero=True, qui=False, **kwargs):
+    with h5py.File(infname) as infile:
+        if 'diag' in infile and 't' in infile['diag'] and var in infile['diag']:
+            ret_i, ret_v = infile['diag']['t'][()], infile['diag'][var][()]
 
-        if only_nonzero:
-            slc = np.nonzero(ret_v)
-            ret_i, ret_v = ret_i[slc], ret_v[slc]
+            if only_nonzero:
+                slc = np.nonzero(ret_v)
+                ret_i, ret_v = ret_i[slc], ret_v[slc]
 
-        if qui:
-            qui_slc = get_quiescence(infile, diag=True, **kwargs)
-            ret_i, ret_v = ret_i[qui_slc], ret_v[qui_slc]
+            if qui:
+                qui_slc = get_quiescence(infile, diag=True, **kwargs)
+                ret_i, ret_v = ret_i[qui_slc], ret_v[qui_slc]
 
-        return ret_i, ret_v
-    elif var[:4] == 'log_':
-        ret_i, ret_v = get_diag(infile, var[4:], only_nonzero=True, qui=False, **kwargs)
-        return ret_i, np.log10(ret_v)
-    else:
-        return None, None
+            return ret_i, ret_v
+        elif var[:4] == 'log_':
+            ret_i, ret_v = get_diag(infile, var[4:], only_nonzero=True, qui=False, **kwargs)
+            return ret_i, np.log10(ret_v)
+        else:
+            return None, None

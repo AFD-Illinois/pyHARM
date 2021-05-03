@@ -5,65 +5,54 @@ import os
 import sys
 import numpy as np
 
-from pyHARM.diag import divB
+from pyHARM.checks import divB
 
 # Define a dict of names, coupled with the functions required to obtain their variables.
 # That way, we only need to specify lists and final operations in eht_analysis,
 # AND don't need to cart all these things around in memory
 
-# TODO parse these according to rules, esp components and e.g. log(), etc
 fns_dict = {'rho': lambda dump: dump['RHO'],
             'bsq': lambda dump: dump.grid.dot(dump['bcov'], dump['bcon']),
             'sigma': lambda dump: dump['bsq'] / dump['RHO'],
-            'U': lambda dump: dump['UU'],
-            'u_t': lambda dump: dump['ucov'][0],
-            'u^t': lambda dump: dump['ucon'][0],
-            'u_r': lambda dump: dump['ucov'][1],
-            'u^r': lambda dump: dump['ucon'][1],
-            'u_th': lambda dump: dump['ucov'][2],
-            'u^th': lambda dump: dump['ucon'][2],
-            'u_phi': lambda dump: dump['ucov'][3],
-            'u^phi': lambda dump: dump['ucon'][3],
+            'u': lambda dump: dump['UU'],
             'FM': lambda dump: dump['RHO'] * dump['ucon'][1],
             'FE': lambda dump: -T_mixed(dump, 1, 0),
             'FE_EM': lambda dump: -TEM_mixed(dump, 1, 0),
             'FE_Fl': lambda dump: -TFl_mixed(dump, 1, 0),
+            'FE_PAKE': lambda dump: -TPAKE_mixed(dump, 1, 0),
+            'FE_EN': lambda dump: -TEN_mixed(dump, 1, 0),
             'FL': lambda dump: T_mixed(dump, 1, 3),
             'FL_EM': lambda dump: TEM_mixed(dump, 1, 3),
             'FL_Fl': lambda dump: TFl_mixed(dump, 1, 3),
             'Be_b': lambda dump: bernoulli(dump, with_B=True),
             'Be_nob': lambda dump: bernoulli(dump, with_B=False),
             'Pg': lambda dump: (dump.header['gam'] - 1.) * dump['UU'],
+            'p': lambda dump: dump['Pg'],
             'Pb': lambda dump: dump['bsq'] / 2,
             'Ptot': lambda dump: dump['Pg'] + dump['Pb'],
             'beta': lambda dump: dump['Pg'] / dump['Pb'],
-            'betainv': lambda dump: 1 / dump['beta'],
+            'betainv': lambda dump: dump['Pb'] / dump['Pg'],
             'jcov': lambda dump: dump.grid.lower_grid(dump['jcon']),
             'jsq': lambda dump: dump.grid.dot(dump['jcon'], dump['jcov']),
             'current': lambda dump: dump.grid.dot(dump['jcon'], dump['jcov']) + dump.grid.dot(dump['jcon'], dump['ucov'])**2,
-            'B': lambda dump: np.sqrt(dump['bsq']),
-            'betagamma': lambda dump: np.sqrt(dump['FE_EM'] / dump['FM'] - 1),
+            'b': lambda dump: np.sqrt(dump['bsq']),
+            'betagamma': lambda dump: np.sqrt((dump['FE'] / dump['FM'])**2 - 1),
             'Theta': lambda dump: (dump.header['gam'] - 1) * dump['UU'] / dump['RHO'],
             'Thetap': lambda dump: (dump.header['gam_p'] - 1) * dump['UU'] / dump['RHO'],
             'Thetae': lambda dump: (dump.header['gam_e'] - 1) * dump['UU'] / dump['RHO'],
             'JE0': lambda dump: T_mixed(dump, 0, 0),
             'JE1': lambda dump: T_mixed(dump, 1, 0),
             'JE2': lambda dump: T_mixed(dump, 2, 0),
+            'lam_MRI': lambda dump: lam_MRI(dump),
+            'jet_psi': lambda dump: jet_psi(dump),
             'divB': lambda dump: divB(dump.grid, dump.prims),
-            # Rules for diagnostic variables
-            'mdot': lambda diag: diag['Mdot'][()],
-            'phi_b': lambda diag: diag['Phi_b'][()] / np.sqrt(diag['Mdot'][()]),
-                        #np.mean(np.sqrt(diag['Mdot'][len(diag['Mdot'])//2:])),
-            'edot': lambda diag: diag['Edot'][()] / diag['Mdot'][()],
-                        #np.mean(diag['Mdot'][len(diag['Mdot'])//2:]),
-            'ldot': lambda diag: diag['Ldot'][()] / diag['Mdot'][()],
-                        #np.mean(diag['Mdot'][len(diag['Mdot'])//2:])
+            'lumproxy': lambda dump: lum_proxy(dump)
             }
 
 pretty_dict = {'rho': r"\rho",
             'bsq': r"b^{2}",
             'sigma': r"\sigma",
-            'U': r"U",
+            'u': r"u",
             'u_t': r"u_{t}",
             'u^t': r"u^{t}",
             'u_r': r"u_{r}",
@@ -77,11 +66,12 @@ pretty_dict = {'rho': r"\rho",
             'FE_EM': r"FE_{EM}",
             'FE_Fl': r"FE_{Fl}",
             'FL':r"FL_{\mathrm{tot}}",
-            'FL_EM': r"FL_{EM}",
-            'FL_Fl': r"FL_{Fl}",
-            'Be_b': r"Be_{B}",
-            'Be_nob': r"Be_{Fl}",
+            'FL_EM': r"FL_{\mathrm{EM}}",
+            'FL_Fl': r"FL_{\mathrm{Fl}}",
+            'Be_b': r"Be_{\mathrm{B}}",
+            'Be_nob': r"Be_{\mathrm{Fluid}}",
             'Pg': r"P_g",
+            'p': r"P_g",
             'Pb': r"P_b",
             'Ptot': r"P_{\mathrm{tot}}",
             'beta': r"\beta",
@@ -105,9 +95,9 @@ pretty_dict = {'rho': r"\rho",
             'Phi_b': r"\Phi_{BH}",
             'Edot': r"\dot{E}",
             'Ldot': r"\dot{L}",
-            'phi_b': r"\Phi_{BH} / \langle \sqrt{\dot{M}} \rangle",
-            'edot': r"\dot{E} / \langle \dot{M} \rangle",
-            'ldot': r"\dot{L} / \langle \dot{M} \rangle",
+            'phi_b': r"\Phi_{BH} / \sqrt{\dot{M}}",
+            'edot': r"\dot{E} / \dot{M}",
+            'ldot': r"\dot{L} / \dot{M}",
             # Independent variables
             't': r"t \; \left( \frac{G M}{c^3} \right)",
             'x': r"x \; \left( \frac{G M}{c^2} \right)",
@@ -120,7 +110,7 @@ pretty_dict = {'rho': r"\rho",
 
 def pretty(var):
     if var[:4] == "log_":
-        return r"$\log_{10} \left( "+pretty_dict[var]+r" \right)$"
+        return r"$\log_{10} \left( "+pretty(var[4:])[1:-1]+r" \right)$"
     elif var in pretty_dict:
         return r"$"+pretty_dict[var]+r"$"
     else:
@@ -162,6 +152,19 @@ def TEM_mixed(dump, i, j):
         return dump['bsq'] * dump['ucon'][i] * dump['ucov'][j] + dump['bsq'] / 2 - \
                dump['bcon'][i] * dump['bcov'][j]
 
+def TPAKE_mixed(dump, i, j):
+    if j != 0:
+        return dump['RHO'] * dump['ucov'][j] * dump['ucon'][i]
+    else:
+        return dump['RHO'] * (dump['ucov'][j] + 1) * dump['ucon'][i]
+
+def TEN_mixed(dump, i, j):
+    gam = dump.header['gam']
+    if i != j:
+        # (u + p) u^i u_j + p delta(i,j)
+        return (gam * dump['UU']) * dump['ucon'][i] * dump['ucov'][j]
+    else:
+        return (gam * dump['UU']) * dump['ucon'][i] * dump['ucov'][j] + (gam - 1) * dump['UU']
 
 def TFl_mixed(dump, i, j):
     gam = dump.header['gam']
@@ -174,16 +177,15 @@ def TFl_mixed(dump, i, j):
 def Fcon(dump, i, j):
     """Return the i,j component of contravariant Maxwell tensor"""
     # TODO loopy this for currents on the backend & use results here
+    # TODO make sure this pulls gdet for vectors, for dual-system KORAL-like dumps
 
     Fconij = np.zeros_like(dump['RHO'])
     if i != j:
         for mu in range(4):
             for nu in range(4):
-                Fconij[:, :, :] += _antisym(i, j, mu, nu) * dump['ucov'][mu] * dump['bcov'][nu]
+                Fconij[:, :, :] += (- _antisym(i, j, mu, nu) / dump['gdet'][:, :, None]) * dump['ucov'][mu] * dump['bcov'][nu]
 
-    # Remember we want gdet in the vectors' coordinate system (this matters for KORAL dump files)
-    # TODO is normalization correct?
-    return Fconij * dump['gdet'][:, :, None]
+    return Fconij
 
 
 def Fcov(dump, i, j):
@@ -198,10 +200,21 @@ def Fcov(dump, i, j):
 
 def bernoulli(dump, with_B=False):
     if with_B:
-        return -T_mixed(dump, 0, 0) / (dump['RHO'] * dump['ucon'][0]) - 1
+        #return -(T_mixed(dump, 0, 0) / dump['FM']) - 1
+        return np.sqrt( (-T_mixed(dump, 1, 0) / (dump['rho']*dump['u^1']))**2 - 1)
     else:
         return -(1 + dump.header['gam'] * dump['UU'] / dump['RHO']) * dump['ucov'][0] - 1
 
+def lam_MRI(dump):
+    return (2*np.pi)/(dump['u^3']/dump['u^0']) * dump['b^th']/np.sqrt(dump['rho'] + dump['u'] + dump['p'] + dump['bsq'])
+
+def jet_psi(dump):
+    sig = dump['sigma']
+    return np.where(sig >= 1, 1, np.where(sig <= 0.1, 0, sig))
+
+def lum_proxy(dump):
+    # See EHT code comparison paper
+    return dump['rho'] ** 3 / dump['Pg'] ** 2 * np.exp(-0.2 * (dump['rho'] ** 2 / (dump['b'] * dump['Pg'] ** 2)) ** (1. / 3.))
 
 # TODO needs work...
 def jnu_inv(nu, Thetae, Ne, B, theta):

@@ -7,11 +7,13 @@
 import glob
 import os
 import multiprocessing
-import psutil
 import numpy as np
-
-
-# TODO fns to process argv
+try:
+    import psutil
+    using_psutil = True
+except ModuleNotFoundError as e:
+    print("Not using psutil: ", e)
+    using_psutil = False
 
 # Run a function in parallel with Python's multiprocessing
 # 'function' must take only a number
@@ -30,7 +32,6 @@ def run_parallel(function, nmax, nthreads, debug=False):
 
 # Run a function in parallel with Python's multiprocessing
 # 'function' must take only a number
-# 'merge_function' must take the same number plus whatever 'function' outputs, and adds to the dictionary out_dict
 def map_parallel(function, nmax, nthreads, debug=False, initializer=None, initargs=()):
     if initializer is not None:
         pool = multiprocessing.Pool(nthreads, initializer=initializer, initargs=initargs)
@@ -87,22 +88,29 @@ def calc_nthreads(hdr, n_mkl=8, pad=0.25):
     except Exception as e:
         print(e)
 
-    # Roughly compute memory and leave some generous padding for multiple copies and Python games
-    # (N1*N2*N3*8)*(NPRIM + 4*4 + 6) = size of "dump," (N1*N2*N3*8)*(2*4*4 + 6) = size of "geom"
-    # TODO get a better model for this, and save memory in general
-    ncopies = hdr['n_prim'] + 4 * 4 + 6
-    nproc = int(pad * psutil.virtual_memory().total / (hdr['n1'] * hdr['n2'] * hdr['n3'] * 8 * ncopies))
-    if nproc < 1:
-        nproc = 1
-    if nproc > psutil.cpu_count(logical=False):
-        nproc = psutil.cpu_count(logical=False)
-    print("Using {} Python processes".format(nproc))
+    if using_psutil:
+        # Roughly compute memory and leave some generous padding for multiple copies and Python games
+        # (N1*N2*N3*8)*(NPRIM + 4*4 + 6) = size of "dump," (N1*N2*N3*8)*(2*4*4 + 6) = size of "geom"
+        # TODO get a better model for this, and save memory in general
+        ncopies = hdr['n_prim'] + 4 * 4 + 6
+        nproc = int(pad * psutil.virtual_memory().total / (hdr['n1'] * hdr['n2'] * hdr['n3'] * 8 * ncopies))
+        if nproc < 1:
+            nproc = 1
+        if nproc > psutil.cpu_count():
+            nproc = psutil.cpu_count()
+        print("Using {} Python processes".format(nproc))
+    else:
+        print("psutil not available: Using 4 processes as a safe default")
+
     return nproc
 
 
 # Convenience for finding zone containing a given value,
 # in coordinate/monotonic-increase variables
 def i_of(var, val, behind=True, fail=False):
+    """Convenience for finding zone containing a given value,
+    in coordinate/monotonic-increase variables
+    """
     i = 0
     while var[i] < val:
         i += 1
@@ -120,71 +128,7 @@ def i_of(var, val, behind=True, fail=False):
 
     return i
 
-
-# COLORIZED OUTPUT
-class color:
-    BOLD = '\033[1m'
-    WARNING = '\033[1;31m'
-    BLUE = '\033[94m'
-    NORMAL = '\033[0m'
-
-
-def get_files(PATH, NAME):
-    return np.sort(glob.glob(os.path.join(PATH, '') + NAME))
-
-
-# PRINT ERROR MESSAGE
-def warn(mesg):
-    print((color.WARNING + "\n  ERROR: " + color.NORMAL + mesg + "\n"))
-
-
-# APPEND '/' TO PATH IF MISSING
-def sanitize_path(path):
-    return os.path.join(path, '')
-
-
-# SEND OUTPUT TO LOG FILE AS WELL AS TERMINAL
-def log_output(sys, logfile_name):
-    import re
-    f = open(logfile_name, 'w')
-
-    class split(object):
-        def __init__(self, *files):
-            self.files = files
-
-        def write(self, obj):
-            n = 0
-            ansi_escape = re.compile(r'\x1b[^m]*m')
-            for f in self.files:
-                if n > 0:
-                    f.write(ansi_escape.sub('', obj))
-                else:
-                    f.write(obj)
-                f.flush()
-                n += 1
-
-        def flush(self):
-            for f in self.files:
-                f.flush()
-
-    sys.stdout = split(sys.stdout, f)
-    sys.stderr = split(sys.stderr, f)
-
-
-# CREATE DIRECTORY
 def make_dir(path):
+    """Make a directory if it does not exist"""
     if not os.path.exists(path):
         os.makedirs(path)
-
-
-# CALL rm -rf ON RELATIVE PATHS ONLY
-def safe_remove(path):
-    import sys
-    from subprocess import call
-
-    # ONLY ALLOW RELATIVE PATHS
-    if path[0] == '/':
-        warn("DIRECTORY " + path + " IS NOT A RELATIVE PATH! DANGER OF DATA LOSS")
-        sys.exit()
-    elif os.path.exists(path):
-        call(['rm', '-rf', path])

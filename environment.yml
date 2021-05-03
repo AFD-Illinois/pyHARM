@@ -1,7 +1,5 @@
 name: pyHARM
 
-# TODO environment-minimal w/o ipython, maybe no matplotlib or loopy deps?
-
 channels:
  - conda-forge
 
@@ -12,10 +10,7 @@ dependencies:
  - scipy
  - matplotlib
  - h5py
- - pyopencl
- - pocl
  - sphinx
- - ipython
- # Get latest loopy from github, as pyPI is out of date
- - pip:
-    - "--editable=git+ssh://git@github.com/inducer/loopy.git@master#egg=loo.py"
+ - ipykernel
+ - ipympl
+ - ipywidgets

@@ -1,10 +1,21 @@
 # pyHARM
-Python tools for HARM: algorithm and analysis
+Python tools for HARM analysis
 
-pyHARM is a set of Python functions implementing (most of) the current version of the HARM scheme for general-relativistic magnetohydrodynamics (GRMHD) from Gammie et al 2003, used by e.g. `iharm3d`, `bhlight`, and others.  It also includes a set of analysis and plotting tools built on these functions, for reading and analyzing HDF5 output from the C-based harm codes, or translated from other codes with [EHT-babel](https://github.com/AFD-Illinois/EHT-babel/).
+pyHARM is a set of Python functions for analyzing and plotting the output of General-Relativistic Magnetohydrodynamic (GRMHD) simulations, including functions for derivation of a number of different quantities (pressure, stress-energy tensor, etc) from the simulation's output, reductions & integrations in Kerr spacetime using a range of different coordinate systems, and tools for plotting simulation results in standard x,y,z coordinates. 
+
+The primary target is simulations based on the HARM scheme (Gammie et al. 2003) -- [iharm3d](https://github.com/AFD-Illinois/iharm3d), [ebhlight](https://github.com/AFD-Illinois/ebhlight), [KHARMA](https://github.com/AFD-Illinois/kharma), and others.  It includes Python re-implementations of most of the scheme, useful for deriving everything about the simulation not directly present in output files.  Output from certain other codes can be converted to a readable format with [EHT-babel](https://github.com/AFD-Illinois/EHT-babel/).
+
+As a consequence of needing to read GRMHD output, pyHARM includes definitions of various coordinate systems in Kerr spacetime, as well as tools for dealing with a logically Cartesian grid in various coordinate systems.  These might be independently useful, see `coordinates.py` & `grid.py` if you're looking for just coordinate tools.
 
 ## Installing:
-The supported/main method for installation is with anaconda.  Just download it from [here](https://www.anaconda.com/distribution/#download-section), make sure that `conda` is in your `PATH`, and run the following:
+The preferred installation method, for flexibility in changing the source as needed, is to run simply:
+```bash
+$ python3 setup.py develop
+```
+Thereafter pyHARM should be importable from any Python prompt or script run in the same environment.  It can also be installed as a user or system package with `pip`.
+
+
+There is also an included Anaconda environment for users who would prefer Anaconda versions of the dependencies -- also note that any future (optional!) re-introduction of OpenCL integration will require the Anaconda environment.
 
 ```bash
 $ conda env create -f environment.yml
@@ -12,43 +23,8 @@ $ conda activate pyHARM
 $ python3 setup.py develop
 ```
 
-The HARM algorithm portion of the code (and eventually, pieces of the analysis) are accelerated with [loopy](https://mathema.tician.de/software/loopy/) and [pyopencl](https://mathema.tician.de/software/pyopencl/), which can take advantage of OpenCL compute devices like graphics cards or specialized CPU libraries.  If you want to use an OpenCL device, copy its ICD file into Anaconda's environment, e.g. for Nvidia on Linux:
+## Examples:
+The `notebooks` directory has a sample Jupyter notebook playing around with some basic reductions & plots.
 
-```bash
-$ cp /etc/OpenCL/vendors/nvidia.icd /path/to/anaconda3/envs/pyHARM/etc/OpenCL/vendors/
-```
-
-### Alternate install
-
-If for some reason you don't (or can't) use Anaconda, issue the following commands someplace where you keep libraries & source code:
-
-```bash
-$ pip3 install --user pyopencl[pocl]
-$ git clone https://github.com/inducer/loopy.git; cd loopy
-$ python3 setup.py install --user
-```
-
-Then add pyHARM from its own directory once you have added dependencies:
-
-```bash
-$ cd /path/to/pyHARM
-$ python setup.py develop
-```
-
-In general, `pyHARM` should more or less act like an installable `setuptools` package -- however, YMMV as this is not tested well.
-
-## Running the HARM algorithm:
-tl;dr
-
-```bash
-$ python3 pyHARM/harm.py -p problemname
-```
-
-Where `problemname` is a subdirectory of `prob/`, with one python file of the same name and one file named param.dat.  The former should define a function:
-
-```python
-def init(params, G, P):
-```
-
-which takes a dictionary of parameter names `int` `float` or `str` with values, a Grid object constructed from the parameters, and the array of primitives P to which it should write.  The current problems give a good idea of what's possible right now.
-
+The scripts in the `scripts/` directory are another good place to check -- they don't always reflect the easiest way to use the library as the interface changes, but they do generally work.
+They are also useful in themselves -- `quick_plot.py` and `movie.py` are good for exploring output, and `analysis.py` provides a pipeline for arbitrary reductions over full GRMHD runs, which is in turn assumed by the `pyHARM.ana.results` module.

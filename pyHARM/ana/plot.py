@@ -4,9 +4,6 @@
 #                                                                              #
 ################################################################################
 
-import matplotlib
-matplotlib.use('Agg')
-
 import matplotlib.pyplot as plt
 from matplotlib import colors, ticker
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -15,6 +12,9 @@ import numpy as np
 from scipy.integrate import trapz
 
 from pyHARM.ana.variables import pretty
+
+# TODO:
+# Unify this with 2D results plotting, including gouraud/flat mesh size changes
 
 def pcolormesh_symlog(ax, X, Y, Z, vmax=None, vmin=None, linthresh=None, decades=4, linscale=0.01, cmap='RdBu_r', cbar=True, **kwargs):
     """Wrapper for matplotlib's pcolormesh that uses it sensibly, instead of the defaults.
@@ -29,8 +29,9 @@ def pcolormesh_symlog(ax, X, Y, Z, vmax=None, vmin=None, linthresh=None, decades
         if vmin is not None:
             vmax = -vmin
         else:
-            vmax = np.abs(np.nanmax(Z))
+            vmax = np.abs(np.nanmax(Z))*2
             vmin = -vmax
+            #print("Using automatic range {} to {}".format(vmin, vmax))
     else:
         vmin = -vmax
 
@@ -45,7 +46,7 @@ def pcolormesh_symlog(ax, X, Y, Z, vmax=None, vmin=None, linthresh=None, decades
                       + [0.0]
                       + [(10.0 ** x) for x in range(-logthresh, int_max_pow)]
                       + [vmax])
-    pcm = ax.pcolormesh(X, Y, Z, norm=colors.SymLogNorm(linthresh=linthresh, linscale=linscale),
+    pcm = ax.pcolormesh(X, Y, Z, norm=colors.SymLogNorm(linthresh=linthresh, linscale=linscale, base=10),
                          cmap=cmap, vmin=-vmax, vmax=vmax, **kwargs)
     if cbar:
         # TODO add some more anonymous ticks
@@ -70,9 +71,10 @@ def decorate_plot(ax, dump, var, bh=True, xticks=None, yticks=None,
     
     :param label: If not None, set plot title
     """
-    if bh:
+
+    if bh and ("minkowski" not in dump['coordinates']) and ("cartesian" not in dump['coordinates']):
         # BH silhouette
-        circle1 = plt.Circle((0, 0), dump['r_eh'], color='k');
+        circle1 = plt.Circle((0, 0), dump['r_eh'], color='k')
         ax.add_artist(circle1)
 
     if cbar:
@@ -110,7 +112,8 @@ def decorate_plot(ax, dump, var, bh=True, xticks=None, yticks=None,
 def plot_xz(ax, dump, var, vmin=None, vmax=None, window=(-40, 40, -40, 40),
             xlabel=True, ylabel=True, arrayspace=False, log=False,
             average=False, integrate=False, half_cut=False,
-            cmap='jet', shading='gouraud', cbar=True, **kwargs):
+            cmap='jet', shading='gouraud', cbar=True, use_imshow=False,
+            at=0, **kwargs):
     """Plot an XZ slice or average of variable var in dump.
     NOTE: also accepts all keyword arguments to decorate_plot()
     :param ax
@@ -123,6 +126,10 @@ def plot_xz(ax, dump, var, vmin=None, vmax=None, window=(-40, 40, -40, 40),
     if isinstance(var, str):
         var = dump[var]
 
+    if use_imshow:
+        ax.imshow(var, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        return
+
     if integrate:
         var *= dump['n3']
         average = True
@@ -133,21 +140,21 @@ def plot_xz(ax, dump, var, vmin=None, vmax=None, window=(-40, 40, -40, 40),
         x = _flatten_12(x1_norm)
         z = _flatten_12(x2_norm)
         if dump['n3'] > 1:
-            var = _flatten_xz(var, average=average)[dump['n1']:, :]
+            var = _flatten_xz(var, at=at, average=average)[dump['n1']:, :]
         else:
             var = var[:, :, 0]
     else:
         if half_cut:
-            x = _flatten_xz(dump['x'], patch_pole=True)[dump['n1']:, :]
-            z = _flatten_xz(dump['z'])[dump['n1']:, :]
-            var = _flatten_xz(var, average=average)[dump['n1']:, :]
-            window[0] = 0
+            x = _flatten_xz(dump['x'], at=at, patch_pole=True)[dump['n1']:, :]
+            z = _flatten_xz(dump['z'], at=at)[dump['n1']:, :]
+            var = _flatten_xz(var, at=at, average=average)[dump['n1']:, :]
+            window = (0, window[1], window[2], window[3])
         else:
-            x = _flatten_xz(dump['x'], patch_pole=True)
-            z = _flatten_xz(dump['z'])
-            var = _flatten_xz(var, average=average)
+            x = _flatten_xz(dump['x'], at=at, patch_pole=True)
+            z = _flatten_xz(dump['z'], at=at)
+            var = _flatten_xz(var, at=at, average=average)
 
-    # print 'xshape is ', x.shape, ', zshape is ', z.shape, ', varshape is ', var.shape
+    #print('xshape is ', x.shape, ', zshape is ', z.shape, ', varshape is ', var.shape)
     if log:
         mesh = pcolormesh_symlog(ax, x, z, var, cmap=cmap, vmin=vmin, vmax=vmax,
                              shading=shading, cbar=cbar)
@@ -158,21 +165,26 @@ def plot_xz(ax, dump, var, vmin=None, vmax=None, window=(-40, 40, -40, 40),
     if arrayspace:
         if xlabel: ax.set_xlabel("X1 (arbitrary)")
         if ylabel: ax.set_ylabel("X2 (arbitrary)")
-        ax.set_xlim([0, 1])
-        ax.set_ylim([0, 1])
-        bh = False
+        if window:
+            ax.set_xlim(window[:2])
+            ax.set_ylim(window[2:])
+        else:
+            ax.set_xlim([0, 1])
+            ax.set_ylim([0, 1])
     else:
         if xlabel: ax.set_xlabel(r"x ($r_g$)")
         if ylabel: ax.set_ylabel(r"z ($r_g$)")
         if window:
             ax.set_xlim(window[:2])
             ax.set_ylim(window[2:])
-        bh = True
 
     if not half_cut:
         ax.set_aspect('equal')
+    
+    if not 'bh' in kwargs:
+        kwargs['bh'] = not arrayspace
 
-    decorate_plot(ax, dump, var, bh=bh, cbar=cbar, **kwargs)
+    decorate_plot(ax, dump, var, cbar=cbar, **kwargs)
 
 def plot_xy(ax, dump, var, vmin=None, vmax=None, window=(-40, 40, -40, 40),
             xlabel=True, ylabel=True, arrayspace=False, log=False,
@@ -210,25 +222,32 @@ def plot_xy(ax, dump, var, vmin=None, vmax=None, window=(-40, 40, -40, 40),
     if arrayspace:
         if xlabel: ax.set_xlabel("X1 (arbitrary)")
         if ylabel: ax.set_ylabel("X3 (arbitrary)")
-        ax.set_xlim([0, 1])
-        ax.set_ylim([0, 1])
-        bh = False
+        if window:
+            ax.set_xlim(window[:2])
+            ax.set_ylim(window[2:])
+        else:
+            ax.set_xlim([0, 1])
+            ax.set_ylim([0, 1])
     else:
         if xlabel: ax.set_xlabel(r"x ($r_g$)")  # or \frac{G M}{c^2}
         if ylabel: ax.set_ylabel(r"y ($r_g$)")
         if window:
             ax.set_xlim(window[:2])
             ax.set_ylim(window[2:])
-        bh = True
 
     ax.set_aspect('equal')
-    decorate_plot(ax, dump, var, bh=bh, cbar=cbar, **kwargs)
+    if not 'bh' in kwargs:
+        kwargs['bh'] = not arrayspace
+    decorate_plot(ax, dump, var, cbar=cbar, **kwargs)
 
 
 # TODO this is currently just for profiles already in 2D
 def plot_thphi(ax, dump, var, r_i, cmap='jet', vmin=None, vmax=None, window=None,
                label=None, xlabel=True, ylabel=True, arrayspace=False,
                project=False, shading='gouraud'):
+    """Plot a theta-phi slice at index r_i
+    :param project 
+    """
     if arrayspace:
         # X3-X2 makes way more sense than X2-X3 since the disk is horizontal
         x = (dump['X3'][r_i] - dump['startx3']) / (dump['n3'] * dump['dx3'])
@@ -237,12 +256,12 @@ def plot_thphi(ax, dump, var, r_i, cmap='jet', vmin=None, vmax=None, window=None
         radius = dump['r'][r_i, 0, 0]
         max_th = dump['n2'] // 2
         if project:
-            x = _loop_phi((dump['th'] * np.cos(dump['phi']))[r_i, :max_th, :])
-            y = _loop_phi((dump['th'] * np.sin(dump['phi']))[r_i, :max_th, :])
+            x = _flatten_yz(dump['th'] * np.cos(dump['phi']), r_i)[:max_th, :]
+            y = _flatten_yz(dump['th'] * np.sin(dump['phi']), r_i)[:max_th, :]
         else:
-            x = _loop_phi(dump['x'][r_i, :max_th, :])
-            y = _loop_phi(dump['y'][r_i, :max_th, :])
-        var = _loop_phi(var[:max_th, :])
+            x = _flatten_yz(dump['x'], r_i)[:max_th, :]
+            y = _flatten_yz(dump['y'], r_i)[:max_th, :]
+        var = _flatten_yz(var[:max_th, :])
 
     if window is None:
         if arrayspace:
@@ -268,10 +287,13 @@ def plot_thphi(ax, dump, var, r_i, cmap='jet', vmin=None, vmax=None, window=None
         if ylabel: ax.set_ylabel(r"$y \frac{c^2}{G M}$")
 
     ax.set_aspect('equal')
-    decorate_plot(ax, dump, var, **kwargs)
+    decorate_plot(ax, dump, var, bh=False, **kwargs)
 
 # Plot two slices together without duplicating everything in the caller
 def plot_slices(ax1, ax2, dump, var, field_overlay=True, nlines=10, **kwargs):
+    """Make adjacent plots with plot_xy and plot_xz, on the given pair of axes.
+    Basically syntactic sugar for plot_xy and plot_xz.
+    """
     if 'arrspace' in list(kwargs.keys()):
         arrspace = kwargs['arrspace']
     else:
@@ -293,21 +315,16 @@ def overlay_contours(ax, dump, var, levels, color='k'):
     return ax.contour(x, z, var, levels=levels, colors=color)
 
 
-def overlay_field(ax, dump, **kwargs):
-    overlay_flowlines(ax, dump, dump['B1'], dump['B2'], **kwargs)
+def overlay_field(ax, dump, arrayspace=False, **kwargs):
+    if not arrayspace:
+        overlay_flowlines(ax, dump, dump['B1'], dump['B2'], **kwargs)
 
-
-def overlay_flowlines(ax, dump, varx1, varx2, nlines=50, arrayspace=False, reverse=False):
+def overlay_flowlines(ax, dump, varx1, varx2, nlines=50, reverse=False):
     N1 = dump['n1']
     N2 = dump['n2']
-    if arrayspace:
-        x1_norm = (dump['X1'] - dump['startx1']) / (dump['n1'] * dump['dx1'])
-        x2_norm = (dump['X2'] - dump['startx2']) / (dump['n2'] * dump['dx2'])
-        x = _flatten_xz(x1_norm)[dump['n1']:, :]
-        z = _flatten_xz(x2_norm)[dump['n1']:, :]
-    else:
-        x = _flatten_xz(dump['x'])
-        z = _flatten_xz(dump['z'])
+
+    x = _flatten_xz(dump['x'])
+    z = _flatten_xz(dump['z'])
 
     varx1 = varx1.mean(axis=-1)
     varx2 = varx2.mean(axis=-1)
@@ -326,10 +343,7 @@ def overlay_flowlines(ax, dump, varx1, varx2, nlines=50, arrayspace=False, rever
     AJ_phi -= AJ_phi.min()
     levels = np.linspace(0, AJ_phi.max(), nlines * 2)
 
-    if arrayspace:
-        ax.contour(x, z, AJ_phi[N1:, :], levels=levels, colors='k')
-    else:
-        ax.contour(x, z, AJ_phi, levels=levels, colors='k')
+    ax.contour(x, z, AJ_phi, levels=levels, colors='k')
 
 
 def overlay_quiver(ax, dump, varx1, varx2, cadence=64, norm=1):
@@ -341,7 +355,7 @@ def overlay_quiver(ax, dump, varx1, varx2, cadence=64, norm=1):
     x = _flatten_xz(x1_norm)[dump['n1']:, :]
     z = _flatten_xz(x2_norm)[dump['n1']:, :]
 
-    s1 = dump['n1'] // cadence;
+    s1 = dump['n1'] // cadence
     s2 = dump['n2'] // cadence
 
     ax.quiver(x[::s1, ::s2], z[::s1, ::s2], varx1[::s1, ::s2], varx2[::s1, ::s2],
@@ -350,7 +364,7 @@ def overlay_quiver(ax, dump, varx1, varx2, cadence=64, norm=1):
 # TODO Consistent idea of plane/average in x2,x3
 def radial_plot(ax, dump, var, n2=0, n3=0, average=False,
                 logr=False, logy=False, rlim=None, ylim=None, arrayspace=False,
-                ylabel=None, style='k-'):
+                ylabel=None, title=None, **kwargs):
     r = dump['r'][:, dump['n2'] // 2, 0]
     if var.ndim == 1:
         data = var
@@ -363,9 +377,9 @@ def radial_plot(ax, dump, var, n2=0, n3=0, average=False,
             data = var[:, n2, n3]
 
     if arrayspace:
-        ax.plot(list(range(dump['n1'])), data, style)
+        ax.plot(list(range(dump['n1'])), data, **kwargs)
     else:
-        ax.plot(r, data, style)
+        ax.plot(r, data, **kwargs)
 
     if logr: ax.set_xscale('log')
     if logy: ax.set_yscale('log')
@@ -375,6 +389,7 @@ def radial_plot(ax, dump, var, n2=0, n3=0, average=False,
 
     ax.set_xlabel(r"$r \frac{c^2}{G M}$")
     if ylabel is not None: ax.set_ylabel(ylabel)
+    if title is not None: ax.set_title(title)
 
 
 def hist_2d(ax, var_x, var_y, xlbl, ylbl, title=None, logcolor=False, bins=40,
@@ -403,7 +418,7 @@ def hist_2d(ax, var_x, var_y, xlbl, ylbl, title=None, logcolor=False, bins=40,
     ax.set_xlabel(xlbl)
     ax.set_ylabel(ylbl)
 
-def _flatten_xz(array, patch_pole=False, average=False):
+def _flatten_xz(array, at=0, patch_pole=False, average=False):
     """Get an XZ (vertical) slice or average of 3D polar data array[nr,nth,nphi]
     Returns an array of size (2*N1, N2) containing the phi={0,pi} slice,
     i.e. both "wings" of data around the BH at center
@@ -426,7 +441,7 @@ def _flatten_xz(array, patch_pole=False, average=False):
         else:
             for i in range(N1):
                 flat[i, :] = array[N1 - 1 - i, :, N3 // 2]
-                flat[i + N1, :] = array[i, :, 0]
+                flat[i + N1, :] = array[i, :, at]
 
     elif array.ndim == 2:
         N1 = array.shape[0]
@@ -444,7 +459,7 @@ def _flatten_xz(array, patch_pole=False, average=False):
 
     return flat
 
-def _flatten_12(array, patch_pole=False, average=False):
+def _flatten_12(array, average=False):
     """Get a single 2D slice or average of 3D data
     Currently limited to x3=0 slice
     :param average: whether to average instead of slicing
@@ -457,10 +472,8 @@ def _flatten_12(array, patch_pole=False, average=False):
             slice = array[:, :, 0]
     elif array.ndim == 2:
         slice = array
-    
-    if patch_pole:
-        flat[:, 0] = 0
-        flat[:, -1] = 0
+
+    return slice
 
 # Get xy slice of 3D data
 def _flatten_xy(array, average=False, loop=True):
@@ -469,6 +482,20 @@ def _flatten_xy(array, average=False, loop=True):
             slice = np.mean(array, axis=1)
         else:
             slice = array[:, array.shape[1] // 2, :]
+    elif array.ndim == 2:
+        slice = array
+
+    if loop:
+        return _loop_phi(slice)
+    else:
+        return slice
+
+def _flatten_yz(array, at_i, average=False, loop=True):
+    if array.ndim == 3:
+        if average:
+            slice = np.mean(array, axis=0)
+        else:
+            slice = array[at_i, :, :]
     elif array.ndim == 2:
         slice = array
 

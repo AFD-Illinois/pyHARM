@@ -29,6 +29,28 @@ def Tmhd(params, G, P, D, dir, slc=None):
 
     return T
 
+def set_fourvel_t(gcov, ucon):
+    AA = gcov[0][0]
+    BB = 2. * (gcov[0][1] * ucon[1] + \
+               gcov[0][2] * ucon[2] + \
+               gcov[0][3] * ucon[3])
+    CC = 1. + gcov[1][1] * ucon[1] * ucon[1] + \
+         gcov[2][2] * ucon[2] * ucon[2] + \
+         gcov[3][3] * ucon[3] * ucon[3] + \
+         2. * (gcov[1][2] * ucon[1] * ucon[2] + \
+               gcov[1][3] * ucon[1] * ucon[3] + \
+               gcov[2][3] * ucon[2] * ucon[3])
+
+    discr = BB * BB - 4. * AA * CC
+    ucon[0] = (-BB - np.sqrt(discr)) / (2. * AA)
+
+def fourvel_to_prim(gcon, ucon, u_prim):
+    alpha2 = -1.0 / gcon[0][0]
+    # Note gamma/alpha is ucon[0]
+    u_prim[1] = ucon[1] + ucon[0] * alpha2 * gcon[0][1]
+    u_prim[2] = ucon[2] + ucon[0] * alpha2 * gcon[0][2]
+    u_prim[3] = ucon[3] + ucon[0] * alpha2 * gcon[0][3]
+
 
 def prim_to_flux(params, G, P, D=None, dir=0, loc=Loci.CENT, slc=None):
     """Calculate the Lax-Friedrichs flux or """
@@ -205,38 +227,9 @@ def get_fluid_source(params, G, P, D, slc=None):
     dU = np.zeros_like(P)
     for mu in range(4):
         for nu in range(4):
-            for gam in range(1, 4):
+            for gam in range(4):
                 dU[Var.UU.value + gam][slc] += T[mu, nu][slc] * G.conn[nu, gam, mu][gslc]
 
     dU[slc] *= G.gdet[Loci.CENT.value][gslc]
 
     return dU
-
-    # # Add a small "wind" source term in RHO,UU
-    # # Stolen shamelessly from iharm2d_v3
-    # if params['wind_term']:
-    #     # need coordinates to evaluate particle addtn rate
-    #     X = G.coord_bulk(Loci.CENT)
-    #     r, th, _ = G.ks_coord(X)
-    #     cth = np.cos(th)
-    #
-    #     # here is the rate at which we're adding particles
-    #     # this function is designed to concentrate effect in the
-    #     # funnel in black hole evolutions
-    #     drhopdt = 2.e-4*cth**4/(1. + r**2)**2
-    #
-    #     dP[RHO] = drhopdt
-    #
-    #     Tp = 10.   # temp, in units of c^2, of new plasma
-    #     dP[UU] = drhopdt*Tp*3.
-    #
-    #     # Leave P[U1,2,3]=0 to add in particles in normal observer frame
-    #     # Likewise leave P[BN]=0
-    #
-    #
-    #     # add in plasma to the T^t_a component of the stress-energy tensor
-    #     # notice that U already contains a factor of sqrt-g
-    #     dD = get_state_vec(G, dP, Loci.CENT)
-    #     ddU = prim_to_flux(G, dP, dD, 0, Loci.CENT)
-    #
-    #     (*dU)[ip] += U[ip]

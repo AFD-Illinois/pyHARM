@@ -1,34 +1,30 @@
 # Tries to load an HDF file, convert the prims to cons, and go back
 
 import sys
-# Faster norm?  Maybe?
 from scipy.linalg import norm
-import pyopencl as cl
-import pyopencl.array as cl_array
 
-# Change as necessary to point to pyHARM (TODO cross-platform script imports)
-sys.path.append("../../pyHARM")
-from defs import Loci
+from pyHARM.defs import Loci
 
-from u_to_p import U_to_P
-from phys import prim_to_flux, get_state
-from h5io import read_dump
-from grid import Grid
+from pyHARM.grmhd.u_to_p import U_to_P
+from pyHARM.grmhd.phys import prim_to_flux, get_state
+from pyHARM.io.dump import read_dump
+from pyHARM.grid import Grid
 
-P, params = read_dump("dump_00001200.h5")
+P, params = read_dump(sys.argv[1])
 
-params['ctx'] = cl.create_some_context()
-print(params['ctx'])
-params['queue'] = cl.CommandQueue(params['ctx'])
-
+# Set anything else we need to specify to get a Grid
 params['ng'] = 0
 params['debug'] = True
-
 G = Grid(params)
 
-P = cl_array.to_device(params['queue'], P.copy())
 D = get_state(params, G, P, Loci.CENT)
 U = prim_to_flux(params, G, P, D, 0, Loci.CENT)
 
+# Set everything else we need for U_to_P
+params['invert_err_tol'] = 1e-8
+params['invert_iter_max'] = 8
+params['invert_iter_delta'] = 1e-5
+params['gamma_max'] = 50
 P_test, _ = U_to_P(params, G, U, 1.05*P)
+
 print("Norm difference: ", norm((P - P_test).get()))

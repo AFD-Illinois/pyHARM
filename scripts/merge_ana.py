@@ -25,7 +25,7 @@ for i,file in enumerate(files):
 null_groups = []
 copy_groups = ['header', 'diag', 'avg', 'coord', 'extras']
 avg_groups = ['r', 'th', 'hth', 'phi', 'rth', 'rhth', 'rphi', 'thphi', 'pdf']
-t_groups = ['t', 'rt', 'tht', 'phit', 'pdft']
+t_groups = ['t', 'rt', 'tht', 'phit', 'rtht', 'thphit', 'rphit', 'pdft']
 groups = null_groups + copy_groups + avg_groups + t_groups
 # Extra base-level keys, all 1D time-based vars
 spare_keys = [key for key in master_file.keys() if key not in groups]

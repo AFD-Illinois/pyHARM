@@ -35,7 +35,7 @@ def make_some_grid(type, n1=128, n2=128, n3=128, a=0, hslope=0.3, r_in=None, r_o
     # Things which should ideally be optional in grid creation,
     # but are not for one reason or another
     params['ng'] = 0
-    params['n_prims'] = 8
+    params['n_prim'] = 8
 
     if type == 'minkowski':
         params['x1min'] = 0
@@ -64,7 +64,7 @@ class Grid:
     size, shape, zones' global locations, metric tensor
     """
 
-    def __init__(self, params):
+    def __init__(self, params, caches=True):
         """
         Initialize a Grid object.  This object divides a domain in native coordinates into zones, and caches the
         local metric (and some other convenient information) at several locations in each zone.
@@ -107,8 +107,8 @@ class Grid:
             self.NG = params['ng']
         else:
             self.NG = 0
-        # Size of grid in-memory (with ghost zones)
-        self.GN = self.N + 2*self.NG
+        # Size of grid in-memory (with ghost zones where appropriate)
+        self.GN = self.N + (self.N > 1) * 2*self.NG
 
         # Slices and shapes sub-objects: to hold numbers in convenient namespaces
         self.slices = Slices(self.NG)
@@ -121,9 +121,9 @@ class Grid:
         elif params['coordinates'] == "fmks":
             # FMKS additionally requires poly_xt, poly_alpha, mks_smooth
             self.coords = FMKS(params)
-        elif params['coordinates'] == "mmks":
+        elif params['coordinates'] == "mmks" or params['coordinates'] == "cmks":
             # MMKS additionally requires poly_xt and poly_alpha
-            self.coords = MMKS(params)
+            self.coords = CMKS(params)
         elif params['coordinates'] == "bhac_mks":
             # BHAC's MKS
             self.coords = BHAC_MKS(params)
@@ -132,11 +132,15 @@ class Grid:
         else:
             raise ValueError("metric is {}!! must be minkowski, mks, mmks, or fmks".format(params['coordinates']))
 
-        # Ask our new coordinate system where to start/stop the native grid,
-        # so it aligns with the KS boundaries we've been assigned
-        self.startx = self.coords.native_startx(params)
-        if self.startx[1] < 0.0:
-            raise ValueError("Not enough radial zones! Increase N1!")
+        # If we got native coordinates, use those
+        if 'x1min' in params:
+            self.startx = np.array([0, params['x1min'], params['x2min'], params['x3min']])
+        else:
+            # Ask our new coordinate system where to start/stop the native grid,
+            # so it aligns with the KS boundaries we've been assigned
+            self.startx = self.coords.native_startx(params)
+            if params['coordinates'] not in ["minkowski", "cartesian"] and self.startx[1] < 0.0:
+                raise ValueError("Not enough radial zones! Increase N1!")
 
         self.stopx = self.coords.native_stopx(params)
 
@@ -144,38 +148,31 @@ class Grid:
         self.dx = (self.stopx - self.startx) / self.NTOT
         self.dV = self.dx[1]*self.dx[2]*self.dx[3]
 
-        self.gcov = np.zeros(self.shapes.locus_geom_tensor)
-        self.gcon = np.zeros_like(self.gcov)
+        if caches:
+            self.gcov = np.zeros(self.shapes.locus_geom_tensor)
+            self.gcon = np.zeros_like(self.gcov)
 
-        self.gdet = np.zeros(self.shapes.locus_geom_scalar)
-        self.lapse = np.zeros_like(self.gdet)
+            self.gdet = np.zeros(self.shapes.locus_geom_scalar)
+            self.lapse = np.zeros_like(self.gdet)
 
-        for loc in Loci:
-            ilist = np.arange(self.GN[1])
-            jlist = np.arange(self.GN[2])
-            x = self.coord(ilist, jlist, 0, loc)
+            for loc in Loci:
+                ilist = np.arange(self.GN[1])
+                jlist = np.arange(self.GN[2])
+                x = self.coord(ilist, jlist, 0, loc)
 
-            # Save zone centers to calculate connection coefficients
-            if loc == Loci.CENT:
-                x_cent = x
+                # Save zone centers to calculate connection coefficients
+                if loc == Loci.CENT:
+                    x_cent = x
 
-            gcov_loc = self.coords.gcov(x)
-            gcon_loc = self.coords.gcon(gcov_loc)
-            gdet_loc = self.coords.gdet(gcov_loc)
-            self.gcov[loc.value] = gcov_loc
-            self.gcon[loc.value] = gcon_loc
-            self.gdet[loc.value] = gdet_loc
-            self.lapse[loc.value] = 1./np.sqrt(-gcon_loc[0, 0])
+                gcov_loc = self.coords.gcov(x)
+                gcon_loc = self.coords.gcon(gcov_loc)
+                gdet_loc = self.coords.gdet(gcov_loc)
+                self.gcov[loc.value] = gcov_loc
+                self.gcon[loc.value] = gcon_loc
+                self.gdet[loc.value] = gdet_loc
+                self.lapse[loc.value] = 1./np.sqrt(-gcon_loc[0, 0])
 
-        self.conn = self.coords.conn_func(x_cent)
-
-        # Get loopy-based functions if we were handed an OpenCL queue
-        if 'queue' in params:
-            self.queue = params['queue']
-            self._compile_kernels()
-            self.use_ocl = True
-        else:
-            self.use_ocl = False
+            self.conn = self.coords.conn_func(x_cent)
 
     def coord(self, i, j, k, loc=Loci.CENT):
         """Get the position x of zone(s) i,j,k, in _native_ coordinates
@@ -254,111 +251,27 @@ class Grid:
                           np.arange(self.GN[2]+1),
                           np.arange(self.GN[3]+1), loc=Loci.CORN)
 
-    def lower_grid(self, vcon, loc=Loci.CENT, ocl=True, out=None):
+    def lower_grid(self, vcon, loc=Loci.CENT):
         """Lower a grid of contravariant rank-1 tensors to covariant ones."""
-        if self.use_ocl and ocl:
-            if out is None:
-                if isinstance(vcon, np.ndarray):
-                    out = np.zeros_like(vcon)
-                else:
-                    out = cl_array.zeros_like(vcon)
-            evt, _ = self.dot2geom(self.queue, g=self.gcov_d[loc.value], v=vcon, out=out)
-            return out
-        else:
-            # TODO support out=
-            return np.einsum("ij...,j...->i...", self.gcov[loc.value, :, :, :, :, None], vcon)
+        return np.einsum("ij...,j...->i...", self.gcov[loc.value, :, :, :, :, None], vcon)
 
-    def raise_grid(self, vcov, loc=Loci.CENT, ocl=True, out=None):
+    def raise_grid(self, vcov, loc=Loci.CENT):
         """Raise a grid of covariant rank-1 tensors to contravariant ones."""
-        if self.use_ocl and ocl:
-            if out is None:
-                if isinstance(vcov, np.ndarray):
-                    out = np.zeros_like(vcov)
-                else:
-                    out = cl_array.zeros_like(vcov)
-            evt, _ = self.dot2geom(self.queue, g=self.gcon_d[loc.value], v=vcov, out=out)
-            return out
-        else:
-            return np.einsum("ij...,j...->i...", self.gcon[loc.value, :, :, :, :, None], vcov)
+        return np.einsum("ij...,j...->i...", self.gcon[loc.value, :, :, :, :, None], vcov)
 
-    def dot(self, ucon, ucov, ocl=True, out=None):
+    def dot(self, ucon, ucov):
         """Inner product along first index. Exists to make other code OpenCL-agnostic"""
-        if self.use_ocl and ocl:
-            if out is None:
-                if isinstance(ucon, np.ndarray):
-                    out = np.zeros(tuple(ucon.shape[1:]), ucon.dtype)
-                else:
-                    out = cl_array.zeros(self.queue, tuple(ucon.shape[1:]), ucon.dtype)
-            evt, _ = self.dot1(self.queue, a=ucon, b=ucov, out=out)
-            return out
-        else:
-            # TODO support out=
-            return np.einsum("i...,i...", ucon, ucov)
-
-    def _compile_kernels(self):
-        # OpenCL kernels for operations that would just be broadcast in numpy,
-        # and backing implementations for the wrappers above.
-
-        # Dot two grid vectors together: sum first index
-        self.dot1 = lp.make_kernel(self.shapes.isl_grid_vector,
-                                     """out[i,j,k] = sum(mu, a[mu,i,j,k] * b[mu,i,j,k])""",
-                                     default_offset=lp.auto)
-        self.dot1 = tune_grid_kernel(self.dot1)
-        # Dot to a geometry (2D) variable
-        self.dot2geom = lp.make_kernel(self.shapes.isl_grid_tensor,
-                                       """out[nu,i,j,k] = sum(mu, g[mu,nu,i,j] * v[mu,i,j,k])""",
-                                       default_offset=lp.auto)
-        # TODO is it still more efficient to break up some over k? Prefetch/explicit cache?
-        self.dot2geom = tune_geom_kernel(self.dot2geom, self.shapes.grid_tensor)
-        self.dot2geom2 = lp.make_kernel(self.shapes.isl_grid_tensor,
-                                        """out[i,j,k] = sum(mu, sum(nu, g[mu,nu,i,j] * u[mu,i,j,k] * v[nu,i,j,k]))""",
-                                        default_offset=lp.auto)
-        self.dot2geom2 = tune_geom_kernel(self.dot2geom2, self.shapes.grid_tensor)
-
-        self.dot2D2geom = lp.make_kernel(self.shapes.isl_grid_tensor,
-                                        """out[i,j,k] = sum(mu, sum(nu, g[mu,nu,i,j] * u[mu, nu,i,j,k]))""",
-                                        default_offset=lp.auto)
-        self.dot2D2geom = tune_geom_kernel(self.dot2D2geom, self.shapes.grid_tensor)
+        return np.einsum("i...,i...", ucon, ucov)
 
 
-        # Define broadcasts to and from geometry variables
-        elementwise_geom_op = """out[i,j,k] = u[i,j,k] <OPERATION> g[i,j]"""
-        self.timesgeom = lp.make_kernel(self.shapes.isl_grid_scalar, elementwise_geom_op.replace("<OPERATION>", "*"),
-                                        default_offset=lp.auto)
-        self.timesgeom = tune_geom_kernel(self.timesgeom)
-
-        self.divbygeom = lp.make_kernel(self.shapes.isl_grid_scalar, elementwise_geom_op.replace("<OPERATION>", "/"),
-                                        default_offset=lp.auto)
-        self.divbygeom = tune_geom_kernel(self.divbygeom)
-
-        vec_elementwise_geom_op = """out[mu,i,j,k] = u[mu,i,j,k] <OPERATION> g[i,j]"""
-        self.vectimesgeom = lp.make_kernel(self.shapes.isl_grid_vector,
-                                           vec_elementwise_geom_op.replace("<OPERATION>", "*"),
-                                           default_offset=lp.auto)
-        self.vectimesgeom = tune_geom_kernel(self.vectimesgeom)
-
-        self.vecdivbygeom = lp.make_kernel(self.shapes.isl_grid_vector,
-                                           vec_elementwise_geom_op.replace("<OPERATION>", "/"),
-                                           default_offset=lp.auto)
-        self.vecdivbygeom = tune_geom_kernel(self.vecdivbygeom)
-
-        # Move everything we'll use to the device for convenience
-        self.gcon_d = cl_array.to_device(self.queue, self.gcon)
-        self.gcov_d = cl_array.to_device(self.queue, self.gcov)
-        self.gdet_d = cl_array.to_device(self.queue, self.gdet)
-        self.lapse_d = cl_array.to_device(self.queue, self.lapse)
-        self.dx_d = cl_array.to_device(self.queue, self.dx)
-
-
-    # TODO unbork
     def dt_light(self):
         """Returns the light crossing time of the smallest zone in the grid"""
         # Following stolen from bhlight's dt_light calculation
 
-        dt_light_local = np.zeros(self.N[1], self.N[2])
+        dt_light_local = np.zeros((self.N[1], self.N[2]), dtype=np.float64)
         gcon = self.gcon
         CENT = Loci.CENT.value
-        for mu in range(4):
+        for mu in range(1,4):
             cplus = np.abs((-gcon[CENT, 0, mu, :, :] +
                             np.sqrt(gcon[CENT, 0, mu, :, :]**2 -
                                     gcon[CENT, mu, mu, :, :] * gcon[CENT, 0, 0, :, :])) /
@@ -368,7 +281,7 @@ class Grid:
                              np.sqrt(gcon[CENT, 0, mu, :, :]**2 -
                                      gcon[CENT, mu, mu, :, :] * gcon[CENT, 0, 0, :, :])) /
                             gcon[CENT, 0, 0, :, :])
-            light_phase_speed = np.max(cplus, cminus)
+            light_phase_speed = np.maximum.reduce([cplus, cminus])
 
             light_phase_speed = np.where(gcon[CENT, 0, mu, :, :] ** 2 -
                                          gcon[CENT, mu, mu, :, :] * gcon[CENT, 0, 0, :, :] >= 0.,
@@ -379,3 +292,18 @@ class Grid:
         dt_light_local = 1. / dt_light_local
 
         return np.min(dt_light_local)
+    
+    def __getitem__(self, key):
+        if key in self.__dict__:
+            return self.__dict__[key]
+        elif key in ['n1', 'n2', 'n3']:
+            return self.NTOT[int(key[-1:])]
+            # TODO tot
+        elif key in ['r', 'th', 'phi']:
+            return getattr(self.coords, key)(self.coord_all())
+        elif key in ['x', 'y', 'z']:
+            return getattr(self.coords, 'cart_' + key)(self.coord_all())
+        elif key in ['X1', 'X2', 'X3']:
+            return self.coord_all()[int(key[-1:])]
+        else:
+            raise ValueError("Grid cannot find or compute {}".format(key))
